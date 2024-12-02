@@ -3,6 +3,8 @@
 
 ### Project ###
 scratch.*
+.data
+.traveltime
 
 
 ### macOS ###
