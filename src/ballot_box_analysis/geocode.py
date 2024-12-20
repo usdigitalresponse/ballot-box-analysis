@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path, PosixPath
@@ -8,6 +9,7 @@ import censusgeocode as cg
 import duckdb
 import geopandas as gpd
 import pandas as pd
+import requests
 from loguru import logger
 
 # TODO: Add documentation to make it clear that this only accepts deconstructed addresses; open issue for alternative
@@ -98,18 +100,18 @@ class Geocoder:
         )
 
     @staticmethod
-    def _geocode_single(
-        row: pd.Series,
-        census_success: Path,
-        census_fail: Path,
-        address_col: str,
-        city_col: str,
-        state_col: str,
-        zip_col: str,
-    ) -> dict:
-        building_id = row["building_id"]
-        cache_file = census_success / f"{building_id}.json"
-        fail_file = census_fail / f"{building_id}.json"
+    def _geocode_single_google(
+        building_id: str,
+        addr: str,
+        google_success: PosixPath,
+        google_fail: PosixPath,
+    ) -> dict | None:
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        if not google_api_key:
+            raise ValueError("Please set the environment variable GOOGLE_API_KEY.")  # noqa: TRY003
+
+        cache_file = google_success / f"{building_id}.json"
+        fail_file = google_fail / f"{building_id}.json"
 
         if cache_file.exists():
             with open(cache_file) as f:
@@ -118,14 +120,61 @@ class Geocoder:
         if fail_file.exists():
             return None
 
-        try:
-            addr = " ".join([
-                row[address_col],
-                row[city_col],
-                row[state_col],
-                row[zip_col],
-            ])
+        r = requests.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={
+                "address": addr,
+                "key": google_api_key,
+            },
+            timeout=10,
+        )
 
+        r.raise_for_status()
+        r_json: dict = r.json()
+        r_status = r_json.get("status")
+
+        if r_status == "OK":
+            with open(cache_file, "w") as f:
+                json.dump(r_json, f, indent=4)
+            return r_json
+        else:
+            with open(fail_file, "w") as f:
+                json.dump(None, f)
+            return None
+
+    @staticmethod
+    def _geocode_single(
+        row: pd.Series,
+        census_success: PosixPath,
+        census_fail: PosixPath,
+        google_success: PosixPath,
+        google_fail: PosixPath,
+        address_col: str,
+        city_col: str,
+        state_col: str,
+        zip_col: str,
+    ) -> dict | None:
+        building_id = row["building_id"]
+        cache_file = census_success / f"{building_id}.json"
+        fail_file = census_fail / f"{building_id}.json"
+
+        addr = " ".join([
+            row[address_col],
+            row[city_col],
+            row[state_col],
+            row[zip_col],
+        ])
+
+        if cache_file.exists():
+            with open(cache_file) as f:
+                return json.load(f)
+
+        if fail_file.exists():
+            return Geocoder._geocode_single_google(
+                building_id=building_id, addr=addr, google_success=google_success, google_fail=google_fail
+            )
+
+        try:
             result = cg.onelineaddress(addr)
 
             if result:
@@ -135,7 +184,9 @@ class Geocoder:
             else:
                 with open(fail_file, "w") as f:
                     json.dump(None, f)
-                return None
+                return Geocoder._geocode_single_google(
+                    building_id=building_id, addr=addr, google_success=google_success, google_fail=google_fail
+                )
 
         except Exception as e:
             logger.error(f"[{building_id}] {e}")
@@ -177,6 +228,8 @@ class Geocoder:
                         [row for _, row in batch.iterrows()],
                         [self.census_success] * _batch_size,
                         [self.census_fail] * _batch_size,
+                        [self.google_success] * _batch_size,
+                        [self.google_fail] * _batch_size,
                         [self.address_col] * _batch_size,
                         [self.city_col] * _batch_size,
                         [self.state_col] * _batch_size,
@@ -191,9 +244,13 @@ class Geocoder:
                     "city": row[self.city_col],
                     "state": row[self.state_col],
                     "zip_code": row[self.zip_col],
-                    "lat": r[0]["coordinates"]["y"],
-                    "lng": r[0]["coordinates"]["x"],
-                    "geocoding_source": "census",
+                    "lat": r["results"][0]["geometry"]["location"]["lat"]
+                    if r.get("results")
+                    else r[0]["coordinates"]["y"],
+                    "lng": r["results"][0]["geometry"]["location"]["lng"]
+                    if r.get("results")
+                    else r[0]["coordinates"]["x"],
+                    "geocoding_source": "google" if r.get("results") else "census",
                     "created_at": datetime.now(),
                 }
                 for r, (_, row) in zip(batch_results, batch.iterrows(), strict=False)
