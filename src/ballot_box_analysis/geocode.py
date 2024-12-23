@@ -245,12 +245,12 @@ class Geocoder:
                     "state": row[self.state_col],
                     "zip_code": row[self.zip_col],
                     "lat": r["results"][0]["geometry"]["location"]["lat"]
-                    if r.get("results")
+                    if isinstance(r, dict)
                     else r[0]["coordinates"]["y"],
                     "lng": r["results"][0]["geometry"]["location"]["lng"]
-                    if r.get("results")
+                    if isinstance(r, dict)
                     else r[0]["coordinates"]["x"],
-                    "geocoding_source": "google" if r.get("results") else "census",
+                    "geocoding_source": "google" if isinstance(r, dict) else "census",
                     "created_at": datetime.now(),
                 }
                 for r, (_, row) in zip(batch_results, batch.iterrows(), strict=False)

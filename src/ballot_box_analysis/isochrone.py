@@ -25,7 +25,7 @@ class IsochroneGenerator:
         arrival_weekday: WEEK_DAYS = "Tuesday",
         arrival_time: str = "18:00",
         timezone: str = "America/Los_Angeles",
-        cache_dir: PosixPath = Path(".traveltime"),
+        cache_dir: PosixPath = Path(".traveltime_cache"),
     ):
         self.locations = locations
         self.name_or_id_col = name_or_id_col
