@@ -7,6 +7,16 @@ from tqdm import tqdm
 
 
 class SpatialJoiner:
+    """
+    A class to perform spatial join operations between ballot box isochrones and voter
+    addresses.
+
+    Attributes:
+        ballot_box_isochrones (gpd.GeoDataFrame): A GeoDataFrame containing the isochrones of ballot boxes.
+        voter_addresses (gpd.GeoDataFrame): A GeoDataFrame containing the addresses of voters.
+
+    """
+
     def __init__(self, ballot_box_isochrones: gpd.GeoDataFrame, voter_addresses: gpd.GeoDataFrame) -> None:
         if not isinstance(ballot_box_isochrones, gpd.GeoDataFrame) or not isinstance(voter_addresses, gpd.GeoDataFrame):
             raise ValueError("Both input dataframes must be GeoPandas geodataframes.")  # noqa: TRY003, TRY004
@@ -15,6 +25,19 @@ class SpatialJoiner:
         self.voter_addresses = voter_addresses
 
     def summary(self, count_voters_col: str) -> pd.DataFrame:
+        """
+        Summarizes the number of voters within and outside ballot box isochrones.
+
+        Args:
+            count_voters_col (str): The column name in `voter_addresses` DataFrame that contains the count of voters.
+
+        Returns:
+            pd.DataFrame: A DataFrame with the following columns:
+                - 'within_any': Boolean indicating if voters are within any ballot box isochrone.
+                - 'count_voters': The count of voters within or outside ballot box isochrones.
+                - 'share_voters': The share of voters within or outside ballot box isochrones.
+
+        """
         within_any_true = 0
         total_count_voters = self.voter_addresses[count_voters_col].sum()
 

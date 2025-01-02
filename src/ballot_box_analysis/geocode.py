@@ -16,6 +16,23 @@ from loguru import logger
 
 
 class Geocoder:
+    """
+    A class to handle geocoding of addresses using Census and Google APIs with caching
+    and DuckDB integration.
+
+    Attributes:
+        addresses_df (pd.DataFrame): DataFrame containing addresses to be geocoded.
+        address_col (str): Column name for street address.
+        city_col (str): Column name for city.
+        state_col (str): Column name for state.
+        zip_col (str): Column name for zip code.
+        unit_col (str | None): Column name for unit number (optional).
+        cache_dir (PosixPath): Directory for caching geocoding results.
+        duckdb_path (PosixPath): Path to DuckDB database file.
+        duckdb_table (str): Name of the table in DuckDB database.
+
+    """
+
     def __init__(
         self,
         addresses_df: pd.DataFrame,
@@ -55,6 +72,24 @@ class Geocoder:
         logger.info(f"DuckDB database created at: {self.duckdb_path}. Table name: {self.duckdb_table}")
 
     def _init_duckdb(self) -> None:
+        """
+        Initializes a DuckDB connection and creates the necessary table if it does not
+        exist.
+
+        This method sets up a connection to a DuckDB database using the path specified in `self.duckdb_path`.
+        It then creates a table with the name specified in `self.duckdb_table` if it does not already exist.
+        The table schema includes the following columns:
+            - building_id: VARCHAR, primary key
+            - street_address: VARCHAR
+            - city: VARCHAR
+            - state: VARCHAR
+            - zip_code: VARCHAR
+            - lat: DOUBLE
+            - lng: DOUBLE
+            - geocoding_source: VARCHAR
+            - created_at: TIMESTAMP, defaults to the current timestamp
+
+        """
         self.conn = duckdb.connect(str(self.duckdb_path))
 
         # Create tables if they don't exist
@@ -73,6 +108,17 @@ class Geocoder:
         """)
 
     def _generate_id(self, row: pd.Series, include_unit: bool = False) -> str:
+        """
+        Generate a unique ID for a given row based on address components.
+
+        Args:
+            row (pd.Series): A pandas Series containing the address components.
+            include_unit (bool, optional): Whether to include the unit component in the ID generation. Defaults to False.
+
+        Returns:
+            str: A SHA-256 hash representing the unique ID for the given row.
+
+        """
         components = [
             row[self.address_col],
             row[self.city_col],
@@ -86,11 +132,35 @@ class Geocoder:
         return hashlib.sha256("".join(components).lower().encode()).hexdigest()
 
     def _get_existing(self) -> pd.DataFrame:
+        """
+        Retrieve existing geocoded data from the database.
+
+        This method executes a SQL query to fetch distinct building IDs along with their
+        latitude, longitude, and geocoding source from the specified DuckDB table.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the distinct building IDs, latitude,
+                longitude, and geocoding source.
+
+        """
         return self.conn.execute(
             f"SELECT DISTINCT building_id, lat, lng, geocoding_source FROM {self.duckdb_table}"  # noqa: S608
         ).fetchdf()
 
     def _join_existing(self) -> gpd.GeoDataFrame:
+        """
+        Joins existing geocoded data with the addresses DataFrame.
+
+        This method retrieves existing geocoded data and merges it with the
+        addresses DataFrame on the "building_id" column using a left join.
+        It then converts the merged DataFrame into a GeoDataFrame with
+        point geometries based on longitude and latitude columns.
+
+        Returns:
+            gpd.GeoDataFrame: A GeoDataFrame containing the merged data with
+                point geometries and the specified coordinate reference system (EPSG:4326).
+
+        """
         geocoded = self._get_existing()
         self.addresses_df = self.addresses_df.merge(geocoded, on="building_id", how="left")
         return gpd.GeoDataFrame(
@@ -106,6 +176,28 @@ class Geocoder:
         google_success: PosixPath,
         google_fail: PosixPath,
     ) -> dict | None:
+        """
+        Geocode a single address using the Google Maps Geocoding API.
+
+        This function attempts to geocode an address using the Google Maps Geocoding API.
+        It first checks if the result is cached in the `google_success` directory. If not,
+        it checks if a previous failure is cached in the `google_fail` directory. If neither
+        cache exists, it makes a request to the Google Maps Geocoding API.
+
+        Args:
+            building_id (str): The unique identifier for the building.
+            addr (str): The address to geocode.
+            google_success (PosixPath): The directory path where successful geocode results are cached.
+            google_fail (PosixPath): The directory path where failed geocode results are cached.
+
+        Returns:
+            dict | None: The geocode result as a dictionary if successful, or None if the geocode failed.
+
+        Raises:
+            ValueError: If the environment variable `GOOGLE_API_KEY` is not set.
+            requests.exceptions.RequestException: If the request to the Google Maps Geocoding API fails.
+
+        """
         google_api_key = os.environ.get("GOOGLE_API_KEY")
         if not google_api_key:
             raise ValueError("Please set the environment variable GOOGLE_API_KEY.")  # noqa: TRY003
@@ -154,6 +246,25 @@ class Geocoder:
         state_col: str,
         zip_col: str,
     ) -> dict | None:
+        """
+        Geocode a single address using Census Geocoder and fallback to Google Geocoder
+        if necessary.
+
+        Args:
+            row (pd.Series): A pandas Series containing the address information.
+            census_success (PosixPath): Path to the directory where successful Census geocoding results are stored.
+            census_fail (PosixPath): Path to the directory where failed Census geocoding results are stored.
+            google_success (PosixPath): Path to the directory where successful Google geocoding results are stored.
+            google_fail (PosixPath): Path to the directory where failed Google geocoding results are stored.
+            address_col (str): The column name for the address in the row.
+            city_col (str): The column name for the city in the row.
+            state_col (str): The column name for the state in the row.
+            zip_col (str): The column name for the ZIP code in the row.
+
+        Returns:
+            dict | None: The geocoding result as a dictionary if successful, otherwise None.
+
+        """
         building_id = row["building_id"]
         cache_file = census_success / f"{building_id}.json"
         fail_file = census_fail / f"{building_id}.json"
@@ -193,6 +304,30 @@ class Geocoder:
             return None
 
     def geocode(self, batch_size: int = 500, processes: int = 50) -> gpd.GeoDataFrame:
+        """
+        Geocode addresses in batches using multiple processes.
+
+        This method processes addresses in the DataFrame `self.addresses_df` by geocoding them
+        using external geocoding services. It skips already processed addresses and processes
+        the remaining addresses in batches. The results are stored in a DuckDB table.
+
+        Args:
+            batch_size (int, optional): The number of addresses to process in each batch. Defaults to 500.
+            processes (int, optional): The number of processes to use for parallel geocoding. Defaults to 50.
+
+        Returns:
+            gpd.GeoDataFrame: A GeoDataFrame containing the geocoded addresses.
+
+        Raises:
+            Exception: If any error occurs during the geocoding process.
+
+        Notes:
+            - The method assumes that `self.addresses_df` contains the columns specified by
+                `self.address_col`, `self.city_col`, `self.state_col`, and `self.zip_col`.
+            - The method uses `ProcessPoolExecutor` for parallel processing.
+            - The geocoding results are appended to a DuckDB table specified by `self.duckdb_table`.
+
+        """
         # Add IDs if not already present
         self.addresses_df.loc[:, "address_id"] = self.addresses_df.apply(self._generate_id, include_unit=True, axis=1)
         self.addresses_df.loc[:, "building_id"] = self.addresses_df.apply(self._generate_id, axis=1)
