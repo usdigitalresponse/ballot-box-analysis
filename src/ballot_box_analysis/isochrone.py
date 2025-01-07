@@ -55,16 +55,16 @@ class IsochroneGenerator:
         Create an instance of the class from a pandas DataFrame.
 
         Args:
-          locations (pd.DataFrame): A pandas DataFrame containing location data.
-          lat_col (str, optional): The name of the column containing latitude values. Defaults to "lat".
-          lng_col (str, optional): The name of the column containing longitude values. Defaults to "lng".
-          name_or_id_col (str, optional): The name of the column containing location names or IDs. Defaults to "name".
+            locations (pd.DataFrame): A pandas DataFrame containing location data.
+            lat_col (str, optional): The name of the column containing latitude values. Defaults to "lat".
+            lng_col (str, optional): The name of the column containing longitude values. Defaults to "lng".
+            name_or_id_col (str, optional): The name of the column containing location names or IDs. Defaults to "name".
 
         Raises:
-          ValueError: If the specified latitude or longitude column does not exist in the DataFrame.
+            ValueError: If the specified latitude or longitude column does not exist in the DataFrame.
 
         Returns:
-          An instance of the class created from the provided DataFrame.
+            An instance of the class created from the provided DataFrame.
 
         """
         if lat_col not in locations.columns:
@@ -90,11 +90,11 @@ class IsochroneGenerator:
         Create an instance of the class from a GeoPandas GeoDataFrame.
 
         Args:
-          locations (gpd.GeoDataFrame): A GeoDataFrame containing the locations.
-          name_or_id_col (str, optional): The column name in the GeoDataFrame that contains the name or ID of the locations. Defaults to "name".
+            locations (gpd.GeoDataFrame): A GeoDataFrame containing the locations.
+            name_or_id_col (str, optional): The column name in the GeoDataFrame that contains the name or ID of the locations. Defaults to "name".
 
         Returns:
-          cls: An instance of the class initialized with the provided locations and name_or_id_col.
+            cls: An instance of the class initialized with the provided locations and name_or_id_col.
 
         """
 

@@ -1,5 +1,12 @@
 #! /usr/bin/env bash
 
+# Install OS dependencies
+sudo apt-get update \
+    && sudo apt-get install -y \
+        gdal-bin \
+        libgdal-dev \
+        g++
+
 # Install dependencies
 poetry install --no-root
 

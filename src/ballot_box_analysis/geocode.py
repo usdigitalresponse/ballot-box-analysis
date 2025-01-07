@@ -42,7 +42,7 @@ class Geocoder:
         zip_col: str,
         unit_col: str | None = None,
         cache_dir: PosixPath = Path(".geocoding_cache"),
-        duckdb_path: PosixPath = Path("scratch.db"),
+        duckdb_path: PosixPath = Path("ballot_box.db"),
         duckdb_table: str = "voters",
     ):
         self.addresses_df = addresses_df
