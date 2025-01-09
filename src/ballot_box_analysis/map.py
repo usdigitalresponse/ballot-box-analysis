@@ -1,12 +1,15 @@
 import contextlib
 import os
 import re
+from pathlib import PosixPath
 from typing import Literal
 
 import geopandas as gpd
 import pygris
+import shapely
+from aenum import StrEnum
 from keplergl import KeplerGl
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class KeplerFilter(BaseModel):
@@ -24,7 +27,7 @@ class KeplerPointColumns(BaseModel):
 
 
 class KeplerGeojsonColumns(BaseModel):
-    geojson: str
+    geojson: str = "geometry"
 
 
 class KeplerPointVisConfig(BaseModel):
@@ -49,7 +52,7 @@ class KeplerGeojsonVisConfig(BaseModel):
 class KeplerLayerConfig(BaseModel):
     dataId: str
     label: str
-    color: list[int, int, int, int]
+    color: list[int, int, int]
     highlightColor: list[int, int, int, int] = [252, 242, 26, 255]
     columns: KeplerPointColumns | KeplerGeojsonColumns
     isVisible: bool
@@ -108,6 +111,27 @@ class KeplerConfig(BaseModel):
     mapStyle: KeplerMapStyle
 
 
+class VoterAddressLayer(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    voter_addresses: gpd.GeoDataFrame
+    tooltip_cols: list[str]
+    geojson_col: str = "geometry"
+    color: list[int, int, int] = [207, 216, 244]
+    vis_config: KeplerPointVisConfig = KeplerPointVisConfig(
+        radius=2,
+        opacity=0.2,
+        outline=False,
+        thickness=2,
+        strokeColor=None,
+    )
+
+
+class KeplerMapLayerTitles(StrEnum):
+    COUNTY_BOUNDARY = "County Boundary"
+    VOTER_ADDRESS = "Voter Address"
+
+
 class InvalidCountyError(Exception):
     def __init__(self):
         self.message = "Invalid county format provided. Please provide the county and state separated by a comma (e.g., 'Monmouth, NJ')."
@@ -116,21 +140,30 @@ class InvalidCountyError(Exception):
 
 class KeplerMap:
     def __init__(self, county: str) -> None:
-        county_boundary = self._get_county_boundary(county)
-        county_centroid = county_boundary["geometry"].iloc[0].centroid
+        county_boundary_gdf = self._get_county_boundary(county)
+        county_boundary: shapely.Polygon | shapely.MultiPolygon = county_boundary_gdf["geometry"].iloc[0]
+        county_centroid = county_boundary.centroid
 
-        self.config = KeplerConfig(
+        self.config = self._init_config(county_centroid)
+
+        self.map = KeplerGl()
+        self._update_map_config()
+        self.map.add_data(data=county_boundary_gdf, name=KeplerMapLayerTitles.COUNTY_BOUNDARY)
+
+    @staticmethod
+    def _init_config(county_centroid: shapely.Point) -> KeplerConfig:
+        return KeplerConfig(
             visState=KeplerVisState(
                 filters=[],
                 layers=[
                     KeplerLayer(
-                        id="County Boundary",
+                        id=KeplerMapLayerTitles.COUNTY_BOUNDARY,
                         type="geojson",
                         config=KeplerLayerConfig(
-                            dataId="County Boundary",
-                            label="County Boundary",
+                            dataId=KeplerMapLayerTitles.COUNTY_BOUNDARY,
+                            label=KeplerMapLayerTitles.COUNTY_BOUNDARY,
                             color=[255, 255, 255],
-                            columns=KeplerGeojsonColumns(geojson="geometry"),
+                            columns=KeplerGeojsonColumns(),
                             isVisible=True,
                             visConfig=KeplerGeojsonVisConfig(
                                 opacity=0.01,
@@ -146,7 +179,7 @@ class KeplerMap:
                 interactionConfig=KeplerInteractionConfig(
                     tooltip=KeplerTooltip(
                         fieldsToShow={
-                            "County Boundary": [
+                            KeplerMapLayerTitles.COUNTY_BOUNDARY: [
                                 KeplerField(name="GEOID"),
                                 KeplerField(name="NAME"),
                             ]
@@ -162,9 +195,8 @@ class KeplerMap:
             mapStyle=KeplerMapStyle(styleType="dark"),
         )
 
-        self.map = KeplerGl()
+    def _update_map_config(self) -> None:
         self.map.config = {"version": "v1", "config": self.config.model_dump()}
-        self.map.add_data(data=county_boundary, name="County Boundary")
 
     @staticmethod
     def _get_county_boundary(county: str) -> gpd.GeoDataFrame:
@@ -180,5 +212,30 @@ class KeplerMap:
 
         return county_boundary.to_crs(epsg=4326)
 
+    def add_voter_address_layer(self, voter_address_layer: VoterAddressLayer) -> None:
+        self.config.visState.layers.append(
+            KeplerLayer(
+                id=KeplerMapLayerTitles.VOTER_ADDRESS,
+                type="geojson",
+                config=KeplerLayerConfig(
+                    dataId=KeplerMapLayerTitles.VOTER_ADDRESS,
+                    label=KeplerMapLayerTitles.VOTER_ADDRESS,
+                    color=voter_address_layer.color,
+                    columns=KeplerGeojsonColumns(),
+                    isVisible=True,
+                    visConfig=voter_address_layer.vis_config,
+                ),
+            )
+        )
+        self.config.visState.interactionConfig.tooltip.fieldsToShow[KeplerMapLayerTitles.VOTER_ADDRESS] = [
+            KeplerField(name=col) for col in voter_address_layer.tooltip_cols
+        ]
+
+        self._update_map_config()
+        self.map.add_data(data=voter_address_layer.voter_addresses, name=KeplerMapLayerTitles.VOTER_ADDRESS)
+
     def show(self) -> KeplerGl:
         return self.map
+
+    def export(self, file_name: PosixPath | str) -> None:
+        self.map.save_to_html(file_name=file_name)
