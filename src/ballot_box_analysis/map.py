@@ -13,10 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class KeplerFilter(BaseModel):
-    dataId: str
-    id: list[str]
+    dataId: list[str]
+    id: str
     name: list[str]
-    type: Literal["multiSelect"]  # TODO: Add other recognized types
+    type: Literal["multiSelect"] = "multiSelect"  # TODO: Add other recognized types
     value: list[str]
 
 
@@ -30,22 +30,16 @@ class KeplerGeojsonColumns(BaseModel):
     geojson: str = "geometry"
 
 
-class KeplerPointVisConfig(BaseModel):
-    radius: int
+class KeplerVisConfig(BaseModel):
+    radius: int | None = None
     fixedRadius: bool = False
-    opacity: float = Field(ge=0, le=1)
-    outline: bool
-    thickness: float
-    strokeColor: list[int, int, int] | None
-    filled: bool = True
-
-
-class KeplerGeojsonVisConfig(BaseModel):
-    opacity: float = Field(ge=0, le=1)
-    strokeOpacity: float = Field(ge=0, le=1)
-    thickness: float
-    strokeColor: list[int, int, int]
-    stroked: bool
+    opacity: float = Field(default=1.0, ge=0, le=1)
+    strokeOpacity: float = Field(default=0.0, ge=0, le=1)
+    thickness: float = 0.0
+    strokeColor: list[int, int, int] | None = None
+    stroked: bool = (
+        False  # TODO: Figure out whether this is synonymous with `outline`, and if not, what distinguishes them
+    )
     filled: bool = True
 
 
@@ -56,7 +50,7 @@ class KeplerLayerConfig(BaseModel):
     highlightColor: list[int, int, int, int] = [252, 242, 26, 255]
     columns: KeplerPointColumns | KeplerGeojsonColumns
     isVisible: bool
-    visConfig: KeplerPointVisConfig | KeplerGeojsonVisConfig
+    visConfig: KeplerVisConfig
 
 
 class KeplerLayer(BaseModel):
@@ -111,6 +105,11 @@ class KeplerConfig(BaseModel):
     mapStyle: KeplerMapStyle
 
 
+class MapFilter(BaseModel):
+    col_name: str
+    default_value: list[str]
+
+
 class VoterAddressLayer(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -118,18 +117,31 @@ class VoterAddressLayer(BaseModel):
     tooltip_cols: list[str]
     geojson_col: str = "geometry"
     color: list[int, int, int] = [207, 216, 244]
-    vis_config: KeplerPointVisConfig = KeplerPointVisConfig(
-        radius=2,
-        opacity=0.2,
-        outline=False,
-        thickness=2,
-        strokeColor=None,
+    is_visible: bool = True
+    vis_config: KeplerVisConfig = KeplerVisConfig(radius=2, opacity=0.2)
+
+
+class TravelTimeRadiusLayer(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    ballot_box_isochrones: gpd.GeoDataFrame
+    tooltip_cols: list[str]
+    geojson_col: str = "geometry"
+    color: list[int, int, int] = [227, 151, 10]
+    is_visible: bool = True
+    vis_config: KeplerVisConfig = KeplerVisConfig(
+        opacity=0.5,
+        strokeOpacity=0.8,
+        thickness=0.5,
+        strokeColor=[50, 33, 19],
     )
+    filters: list[MapFilter] | None = None
 
 
 class KeplerMapLayerTitles(StrEnum):
     COUNTY_BOUNDARY = "County Boundary"
     VOTER_ADDRESS = "Voter Address"
+    TRAVEL_TIME_RADIUS = "Travel Time Radius"
 
 
 class InvalidCountyError(Exception):
@@ -165,7 +177,7 @@ class KeplerMap:
                             color=[255, 255, 255],
                             columns=KeplerGeojsonColumns(),
                             isVisible=True,
-                            visConfig=KeplerGeojsonVisConfig(
+                            visConfig=KeplerVisConfig(
                                 opacity=0.01,
                                 strokeOpacity=0.15,
                                 thickness=0.5,
@@ -212,8 +224,24 @@ class KeplerMap:
 
         return county_boundary.to_crs(epsg=4326)
 
-    def add_voter_address_layer(self, voter_address_layer: VoterAddressLayer) -> None:
-        self.config.visState.layers.append(
+    def show(self) -> KeplerGl:
+        return self.map
+
+    def export(self, file_name: PosixPath | str) -> None:
+        self.map.save_to_html(file_name=file_name)
+
+
+class IsochroneMap(KeplerMap):
+    def __init__(
+        self, county: str, voter_address_layer: VoterAddressLayer, travel_time_radius_layer: TravelTimeRadiusLayer
+    ) -> None:
+        super().__init__(county)
+        self._add_voter_address_layer(voter_address_layer)
+        self._add_travel_time_radius_layer(travel_time_radius_layer)
+
+    def _add_voter_address_layer(self, voter_address_layer: VoterAddressLayer) -> None:
+        self.config.visState.layers.insert(
+            0,
             KeplerLayer(
                 id=KeplerMapLayerTitles.VOTER_ADDRESS,
                 type="geojson",
@@ -222,10 +250,10 @@ class KeplerMap:
                     label=KeplerMapLayerTitles.VOTER_ADDRESS,
                     color=voter_address_layer.color,
                     columns=KeplerGeojsonColumns(),
-                    isVisible=True,
+                    isVisible=voter_address_layer.is_visible,
                     visConfig=voter_address_layer.vis_config,
                 ),
-            )
+            ),
         )
         self.config.visState.interactionConfig.tooltip.fieldsToShow[KeplerMapLayerTitles.VOTER_ADDRESS] = [
             KeplerField(name=col) for col in voter_address_layer.tooltip_cols
@@ -234,8 +262,38 @@ class KeplerMap:
         self._update_map_config()
         self.map.add_data(data=voter_address_layer.voter_addresses, name=KeplerMapLayerTitles.VOTER_ADDRESS)
 
-    def show(self) -> KeplerGl:
-        return self.map
+    def _add_travel_time_radius_layer(self, travel_time_radius_layer: TravelTimeRadiusLayer) -> None:
+        self.config.visState.layers.insert(
+            0,
+            KeplerLayer(
+                id=KeplerMapLayerTitles.TRAVEL_TIME_RADIUS,
+                type="geojson",
+                config=KeplerLayerConfig(
+                    dataId=KeplerMapLayerTitles.TRAVEL_TIME_RADIUS,
+                    label=KeplerMapLayerTitles.TRAVEL_TIME_RADIUS,
+                    color=travel_time_radius_layer.color,
+                    columns=KeplerGeojsonColumns(),
+                    isVisible=travel_time_radius_layer.is_visible,
+                    visConfig=travel_time_radius_layer.vis_config,
+                ),
+            ),
+        )
+        self.config.visState.interactionConfig.tooltip.fieldsToShow[KeplerMapLayerTitles.TRAVEL_TIME_RADIUS] = [
+            KeplerField(name=col) for col in travel_time_radius_layer.tooltip_cols
+        ]
 
-    def export(self, file_name: PosixPath | str) -> None:
-        self.map.save_to_html(file_name=file_name)
+        if travel_time_radius_layer.filters:
+            for _filter in travel_time_radius_layer.filters:
+                self.config.visState.filters.append(
+                    KeplerFilter(
+                        dataId=[KeplerMapLayerTitles.TRAVEL_TIME_RADIUS],
+                        id=KeplerMapLayerTitles.TRAVEL_TIME_RADIUS,
+                        name=[_filter.col_name],
+                        value=_filter.default_value,
+                    )
+                )
+
+        self._update_map_config()
+        self.map.add_data(
+            data=travel_time_radius_layer.ballot_box_isochrones, name=KeplerMapLayerTitles.TRAVEL_TIME_RADIUS
+        )
